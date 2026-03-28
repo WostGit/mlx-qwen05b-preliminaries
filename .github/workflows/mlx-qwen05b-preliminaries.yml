@@ -6,7 +6,7 @@ on:
       run_finetune:
         description: "Run fine-tuning step"
         required: true
-        default: "true"
+        default: "false"
       train_file:
         description: "Training file path"
         required: true
@@ -61,34 +61,54 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: ${{ runner.os }}-${{ runner.arch }}-mlx-qwen05b-safe-ft-v1
+          key: ${{ runner.os }}-${{ runner.arch }}-mlx-qwen05b-safe-ft-v2
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install deps
+      - name: Install pinned deps
         run: |
           set -euxo pipefail
-          python -m pip install --upgrade pip
-          pip install mlx mlx-lm huggingface_hub
+          python -m pip install --upgrade "pip<26.1"
+          pip install \
+            "mlx==0.31.1" \
+            "mlx-lm==0.31.1" \
+            "huggingface_hub<1.0"
 
       - name: Package versions
         run: |
           python - <<'PY'
           import importlib.metadata as md
           print("=== PACKAGES ===")
-          for p in ["mlx", "mlx-lm", "huggingface_hub", "pip"]:
+          for p in ["mlx", "mlx-lm", "huggingface_hub", "transformers", "numpy", "pip"]:
               try:
                   print(f"{p}: {md.version(p)}")
               except Exception as e:
                   print(f"{p}: NOT FOUND ({e})")
           PY
 
-      - name: Validate dataset files exist
-        env:
-          TRAIN_FILE: ${{ github.event.inputs.train_file || 'data/train.jsonl' }}
-          VALID_FILE: ${{ github.event.inputs.valid_file || 'data/valid.jsonl' }}
+      - name: Resolve inputs
+        id: inputs
+        shell: bash
         run: |
           set -euxo pipefail
+          TRAIN_FILE="${{ github.event.inputs.train_file }}"
+          VALID_FILE="${{ github.event.inputs.valid_file }}"
+          RUN_FINETUNE="${{ github.event.inputs.run_finetune }}"
+
+          if [ -z "${TRAIN_FILE}" ]; then TRAIN_FILE="data/train.jsonl"; fi
+          if [ -z "${VALID_FILE}" ]; then VALID_FILE="data/valid.jsonl"; fi
+          if [ -z "${RUN_FINETUNE}" ]; then RUN_FINETUNE="false"; fi
+
+          echo "train_file=$TRAIN_FILE" >> "$GITHUB_OUTPUT"
+          echo "valid_file=$VALID_FILE" >> "$GITHUB_OUTPUT"
+          echo "run_finetune=$RUN_FINETUNE" >> "$GITHUB_OUTPUT"
+
+      - name: Validate dataset files exist
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TRAIN_FILE="${{ steps.inputs.outputs.train_file }}"
+          VALID_FILE="${{ steps.inputs.outputs.valid_file }}"
           echo "TRAIN_FILE=$TRAIN_FILE"
           echo "VALID_FILE=$VALID_FILE"
           test -f "$TRAIN_FILE"
@@ -98,19 +118,18 @@ jobs:
 
       - name: Validate dataset schema and policy checks
         env:
-          TRAIN_FILE: ${{ github.event.inputs.train_file || 'data/train.jsonl' }}
-          VALID_FILE: ${{ github.event.inputs.valid_file || 'data/valid.jsonl' }}
+          TRAIN_FILE: ${{ steps.inputs.outputs.train_file }}
+          VALID_FILE: ${{ steps.inputs.outputs.valid_file }}
         run: |
           set -euxo pipefail
           python - <<'PY'
-          import json, os, sys
+          import json, os
 
           files = [os.environ["TRAIN_FILE"], os.environ["VALID_FILE"]]
 
           banned_phrases = [
               "written entirely by a human",
               "not ai generated",
-              "not AI generated",
               "human-authored and not machine-assisted",
           ]
 
@@ -119,6 +138,9 @@ jobs:
               print(f"\n=== VALIDATING {path} ===")
               with open(path, "r", encoding="utf-8") as f:
                   for i, line in enumerate(f, 1):
+                      line = line.strip()
+                      if not line:
+                          continue
                       total += 1
                       obj = json.loads(line)
                       if "prompt" not in obj or "completion" not in obj:
@@ -162,21 +184,31 @@ jobs:
               raise SystemExit("Base generation returned empty output")
           PY
 
+      - name: Show LoRA help
+        if: ${{ steps.inputs.outputs.run_finetune == 'true' }}
+        run: |
+          set -euxo pipefail
+          python -m mlx_lm.lora --help || true
+
       - name: Optional fine-tune
-        if: ${{ github.event.inputs.run_finetune != 'false' }}
+        if: ${{ steps.inputs.outputs.run_finetune == 'true' }}
         env:
-          TRAIN_FILE: ${{ github.event.inputs.train_file || 'data/train.jsonl' }}
-          VALID_FILE: ${{ github.event.inputs.valid_file || 'data/valid.jsonl' }}
+          TRAIN_FILE: ${{ steps.inputs.outputs.train_file }}
+          VALID_FILE: ${{ steps.inputs.outputs.valid_file }}
         run: |
           set -euxo pipefail
           echo "=== STARTING SAFE FINE-TUNE ==="
           echo "Train file: $TRAIN_FILE"
           echo "Valid file: $VALID_FILE"
 
+          mkdir -p data
+          cp "$TRAIN_FILE" data/train.jsonl
+          cp "$VALID_FILE" data/valid.jsonl
+
           python -m mlx_lm.lora \
             --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
             --train \
-            --data . \
+            --data data \
             --iters 20 \
             --batch-size 1 \
             --learning-rate 1e-5 \
