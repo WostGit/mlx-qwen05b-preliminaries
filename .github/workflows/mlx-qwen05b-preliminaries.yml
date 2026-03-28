@@ -8,7 +8,7 @@ on:
 
 jobs:
   preliminaries:
-    name: MLX + Qwen 0.5B smoke test
+    name: MLX + Qwen 0.5B verbose smoke test
     runs-on: macos-26
     timeout-minutes: 25
 
@@ -16,193 +16,150 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Print runner details
-        shell: bash
+      - name: Print runner + system info
         run: |
           set -euxo pipefail
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "=== RUNNER INFO ==="
+          echo "Repo: $GITHUB_REPOSITORY"
           echo "Actor: $GITHUB_ACTOR"
           echo "Ref: $GITHUB_REF"
           echo "SHA: $GITHUB_SHA"
-          echo "Runner OS: $RUNNER_OS"
-          echo "Runner Arch: $RUNNER_ARCH"
+          echo "OS: $RUNNER_OS"
+          echo "Arch: $RUNNER_ARCH"
           sw_vers
           uname -a
           sysctl -n machdep.cpu.brand_string || true
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Print Python details
-        shell: bash
+      - name: Print Python info
         run: |
           set -euxo pipefail
           python --version
           which python
           python - <<'PY'
-          import platform
-          import sys
-
+          import platform, sys
           print("platform:", platform.platform())
           print("python_executable:", sys.executable)
           print("python_version:", sys.version)
           PY
 
-      - name: Cache Hugging Face files
+      - name: Cache HuggingFace
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/huggingface
-          key: ${{ runner.os }}-${{ runner.arch }}-mlx-qwen05b-${{ hashFiles('.github/workflows/mlx-qwen05b-preliminaries.yml') }}
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-${{ runner.arch }}-mlx-qwen05b
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-mlx-qwen05b-
+            ${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install dependencies
-        shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install mlx mlx-lm huggingface_hub
 
-      - name: Print installed package versions
-        shell: bash
+      - name: Print package versions
         run: |
-          set -euxo pipefail
           python - <<'PY'
           import importlib.metadata as md
 
-          packages = [
-              "mlx",
-              "mlx-lm",
-              "huggingface_hub",
-              "pip",
-              "setuptools",
-          ]
-
-          for pkg in packages:
+          pkgs = ["mlx", "mlx-lm", "huggingface_hub", "pip"]
+          print("=== PACKAGE VERSIONS ===")
+          for p in pkgs:
               try:
-                  print(f"{pkg}={md.version(pkg)}")
-              except Exception as exc:
-                  print(f"{pkg}=NOT_FOUND ({exc})")
+                  print(f"{p}: {md.version(p)}")
+              except Exception as e:
+                  print(f"{p}: NOT FOUND ({e})")
           PY
 
-      - name: Run verbose preliminaries test
-        shell: bash
+      - name: Run FULL verbose prelim test
         env:
-          MODEL_REPO: mlx-community/Qwen2.5-0.5B-Instruct-4bit
-          SENTINEL_PROMPT: "Say exactly: PRELIM_OK"
-          SENTINEL_EXPECTED: "PRELIM_OK"
+          MODEL: mlx-community/Qwen2.5-0.5B-Instruct-4bit
         run: |
           set -euxo pipefail
+
           python - <<'PY'
-          import json
-          import os
-          import platform
-          import sys
-          import time
+          import time, sys, platform
+          import importlib.metadata as md
 
-          result = {
-              "ok": False,
-              "model_repo": os.environ["MODEL_REPO"],
-              "sentinel_prompt": os.environ["SENTINEL_PROMPT"],
-              "sentinel_expected": os.environ["SENTINEL_EXPECTED"],
-              "python_version": sys.version,
-              "platform": platform.platform(),
-              "timestamps": {},
-          }
+          print("\n=== PRELIM TEST START ===")
 
+          print("\n--- ENVIRONMENT ---")
+          print("platform:", platform.platform())
+          print("python:", sys.version)
+
+          print("\n--- IMPORT TEST ---")
           t0 = time.time()
+          import mlx
+          from mlx_lm import load, generate
+          print("mlx imported OK")
+          print("import time:", round(time.time() - t0, 4), "sec")
 
-          print("=== PRELIMINARY CHECK: IMPORTS ===")
           try:
-              import mlx
-              from mlx_lm import load, generate
-          except Exception as exc:
-              print(f"Import failure: {exc}")
-              result["stage"] = "import"
-              result["error"] = repr(exc)
-              with open("prelim_result.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              raise
+              print("mlx version:", md.version("mlx"))
+              print("mlx-lm version:", md.version("mlx-lm"))
+          except:
+              print("version lookup failed")
 
-          result["timestamps"]["import_sec"] = round(time.time() - t0, 4)
-          result["mlx_version"] = getattr(mlx, "__version__", "unknown")
-          print("mlx_version:", result["mlx_version"])
-
-          print("=== PRELIMINARY CHECK: MODEL LOAD ===")
+          print("\n--- MODEL LOAD ---")
+          MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
           t1 = time.time()
-          try:
-              model, tokenizer = load(result["model_repo"])
-          except Exception as exc:
-              print(f"Model load failure: {exc}")
-              result["stage"] = "load"
-              result["error"] = repr(exc)
-              result["timestamps"]["load_sec"] = round(time.time() - t1, 4)
-              with open("prelim_result.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              raise
 
-          result["timestamps"]["load_sec"] = round(time.time() - t1, 4)
-          print("load_sec:", result["timestamps"]["load_sec"])
+          model, tokenizer = load(MODEL)
 
-          print("=== PRELIMINARY CHECK: GENERATION ===")
+          load_time = time.time() - t1
+          print("model loaded:", MODEL)
+          print("load time:", round(load_time, 4), "sec")
+
+          print("\n--- GENERATION ---")
+
+          PROMPT = """Output exactly this string and nothing else:
+PRELIM_OK"""
+
+          print("prompt:")
+          print(PROMPT)
+
           t2 = time.time()
-          try:
-              output = generate(
-                  model,
-                  tokenizer,
-                  prompt=result["sentinel_prompt"],
-                  max_tokens=24,
-                  verbose=True,
-              )
-          except Exception as exc:
-              print(f"Generation failure: {exc}")
-              result["stage"] = "generate"
-              result["error"] = repr(exc)
-              result["timestamps"]["generate_sec"] = round(time.time() - t2, 4)
-              with open("prelim_result.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              raise
 
-          result["timestamps"]["generate_sec"] = round(time.time() - t2, 4)
-          result["raw_output"] = output.strip()
-          print("raw_output:", repr(result["raw_output"]))
+          output = generate(
+              model,
+              tokenizer,
+              prompt=PROMPT,
+              max_tokens=10,
+              verbose=True,
+          )
 
-          print("=== PRELIMINARY CHECK: SENTINEL ASSERTION ===")
-          if result["sentinel_expected"] not in result["raw_output"]:
-              result["stage"] = "assert"
-              result["error"] = (
-                  f"Expected token '{result['sentinel_expected']}' not found in output."
-              )
-              with open("prelim_result.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              raise SystemExit(result["error"])
+          gen_time = time.time() - t2
 
-          result["stage"] = "done"
-          result["ok"] = True
-          result["timestamps"]["total_sec"] = round(time.time() - t0, 4)
+          print("\n--- RAW OUTPUT ---")
+          print(repr(output))
 
-          with open("prelim_result.json", "w") as f:
-              json.dump(result, f, indent=2)
+          normalized = " ".join(output.strip().split())
 
-          print("=== PRELIMINARY CHECK PASSED ===")
-          print(json.dumps(result, indent=2))
+          print("\n--- NORMALIZED OUTPUT ---")
+          print(repr(normalized))
+
+          expected = "PRELIM_OK"
+
+          print("\n--- ASSERTION ---")
+          print("expected:", expected)
+
+          if normalized != expected:
+              print("\n❌ FAILURE: OUTPUT MISMATCH")
+              print("got:", normalized)
+              print("expected:", expected)
+              sys.exit(1)
+
+          print("\n✅ SUCCESS: EXACT MATCH")
+
+          print("\n--- TIMINGS ---")
+          print("import_sec:", round(t0 - t0, 4))
+          print("load_sec:", round(load_time, 4))
+          print("generate_sec:", round(gen_time, 4))
+          print("total_sec:", round(time.time() - t0, 4))
+
+          print("\n=== PRELIM TEST COMPLETE ===")
           PY
-
-      - name: Show JSON result
-        if: always()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          test -f prelim_result.json && cat prelim_result.json || echo "prelim_result.json not found"
-
-      - name: Upload JSON artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlx-qwen05b-prelim-result
-          path: prelim_result.json
-          if-no-files-found: warn
