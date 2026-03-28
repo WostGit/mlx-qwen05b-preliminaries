@@ -8,43 +8,36 @@ on:
 
 jobs:
   preliminaries:
-    name: MLX + Qwen 0.5B verbose smoke test
+    name: MLX + Qwen 0.5B strict verbose test
     runs-on: macos-26
     timeout-minutes: 25
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Print runner + system info
+      - name: System info
         run: |
           set -euxo pipefail
-          echo "=== RUNNER INFO ==="
+          echo "=== SYSTEM ==="
           echo "Repo: $GITHUB_REPOSITORY"
           echo "Actor: $GITHUB_ACTOR"
-          echo "Ref: $GITHUB_REF"
-          echo "SHA: $GITHUB_SHA"
           echo "OS: $RUNNER_OS"
           echo "Arch: $RUNNER_ARCH"
           sw_vers
           uname -a
-          sysctl -n machdep.cpu.brand_string || true
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Print Python info
+      - name: Python info
         run: |
-          set -euxo pipefail
           python --version
-          which python
           python - <<'PY'
           import platform, sys
           print("platform:", platform.platform())
-          print("python_executable:", sys.executable)
-          print("python_version:", sys.version)
+          print("python:", sys.version)
           PY
 
       - name: Cache HuggingFace
@@ -55,29 +48,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install mlx mlx-lm huggingface_hub
 
-      - name: Print package versions
+      - name: Package versions
         run: |
           python - <<'PY'
           import importlib.metadata as md
-
-          pkgs = ["mlx", "mlx-lm", "huggingface_hub", "pip"]
-          print("=== PACKAGE VERSIONS ===")
-          for p in pkgs:
+          print("=== PACKAGES ===")
+          for p in ["mlx", "mlx-lm", "huggingface_hub"]:
               try:
-                  print(f"{p}: {md.version(p)}")
+                  print(p, md.version(p))
               except Exception as e:
-                  print(f"{p}: NOT FOUND ({e})")
+                  print(p, "NOT FOUND", e)
           PY
 
-      - name: Run FULL verbose prelim test
-        env:
-          MODEL: mlx-community/Qwen2.5-0.5B-Instruct-4bit
+      - name: Run strict prelim test
         run: |
           set -euxo pipefail
 
@@ -85,42 +74,36 @@ jobs:
           import time, sys, platform
           import importlib.metadata as md
 
-          print("\n=== PRELIM TEST START ===")
+          print("\n=== PRELIM START ===")
 
-          print("\n--- ENVIRONMENT ---")
-          print("platform:", platform.platform())
-          print("python:", sys.version)
+          print("\nENV:")
+          print(platform.platform())
+          print(sys.version)
 
-          print("\n--- IMPORT TEST ---")
+          print("\nIMPORT TEST")
           t0 = time.time()
           import mlx
           from mlx_lm import load, generate
-          print("mlx imported OK")
-          print("import time:", round(time.time() - t0, 4), "sec")
+          print("import OK in", round(time.time() - t0, 4), "sec")
 
           try:
-              print("mlx version:", md.version("mlx"))
-              print("mlx-lm version:", md.version("mlx-lm"))
+              print("mlx:", md.version("mlx"))
+              print("mlx-lm:", md.version("mlx-lm"))
           except:
               print("version lookup failed")
 
-          print("\n--- MODEL LOAD ---")
+          print("\nMODEL LOAD")
           MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
           t1 = time.time()
-
           model, tokenizer = load(MODEL)
-
           load_time = time.time() - t1
-          print("model loaded:", MODEL)
-          print("load time:", round(load_time, 4), "sec")
+          print("loaded", MODEL)
+          print("load_sec:", round(load_time, 4))
 
-          print("\n--- GENERATION ---")
+          print("\nGENERATION")
 
-          PROMPT = """Output exactly this string and nothing else:
-PRELIM_OK"""
-
-          print("prompt:")
-          print(PROMPT)
+          PROMPT = "Return EXACTLY this token with no extra text: PRELIM_OK"
+          print("prompt:", PROMPT)
 
           t2 = time.time()
 
@@ -128,38 +111,34 @@ PRELIM_OK"""
               model,
               tokenizer,
               prompt=PROMPT,
-              max_tokens=10,
+              max_tokens=6,
               verbose=True,
           )
 
           gen_time = time.time() - t2
 
-          print("\n--- RAW OUTPUT ---")
+          print("\nRAW OUTPUT:")
           print(repr(output))
 
           normalized = " ".join(output.strip().split())
-
-          print("\n--- NORMALIZED OUTPUT ---")
+          print("\nNORMALIZED:")
           print(repr(normalized))
 
           expected = "PRELIM_OK"
-
-          print("\n--- ASSERTION ---")
-          print("expected:", expected)
+          print("\nEXPECTED:", expected)
 
           if normalized != expected:
-              print("\n❌ FAILURE: OUTPUT MISMATCH")
+              print("\n❌ FAIL")
               print("got:", normalized)
               print("expected:", expected)
               sys.exit(1)
 
-          print("\n✅ SUCCESS: EXACT MATCH")
+          print("\n✅ PASS")
 
-          print("\n--- TIMINGS ---")
-          print("import_sec:", round(t0 - t0, 4))
+          print("\nTIMINGS")
           print("load_sec:", round(load_time, 4))
           print("generate_sec:", round(gen_time, 4))
           print("total_sec:", round(time.time() - t0, 4))
 
-          print("\n=== PRELIM TEST COMPLETE ===")
+          print("\n=== PRELIM COMPLETE ===")
           PY
